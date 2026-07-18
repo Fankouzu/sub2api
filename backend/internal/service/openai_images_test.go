@@ -1237,6 +1237,7 @@ func TestOpenAIGatewayServiceForwardImages_OAuthEditsMultipartUsesResponsesAPI(t
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, 1, result.ImageCount)
+	require.Equal(t, "image_generation", gjson.GetBytes(upstream.lastBody, "tool_choice.type").String())
 	require.Equal(t, "gpt-image-2", gjson.GetBytes(upstream.lastBody, "tools.0.model").String())
 	require.Equal(t, "edit", gjson.GetBytes(upstream.lastBody, "tools.0.action").String())
 	require.False(t, gjson.GetBytes(upstream.lastBody, "tools.0.input_fidelity").Exists())
@@ -1377,6 +1378,25 @@ func TestBuildOpenAIImagesResponsesRequest_StripsInputFidelity(t *testing.T) {
 	require.NotNil(t, body)
 	require.False(t, gjson.GetBytes(body, "tools.0.input_fidelity").Exists())
 	require.Equal(t, "edit", gjson.GetBytes(body, "tools.0.action").String())
+}
+
+func TestEnsureOpenAIImagesResponsesToolInvariant_RepairsMissingEditTool(t *testing.T) {
+	parsed := &OpenAIImagesRequest{
+		Endpoint: openAIImagesEditsEndpoint,
+		Prompt:   "replace background",
+		InputImageURLs: []string{
+			"https://example.com/source.png",
+		},
+	}
+	body := []byte(`{"model":"gpt-5.4-mini","tool_choice":{"type":"image_generation"},"tools":[]}`)
+
+	repaired, modified, err := ensureOpenAIImagesResponsesToolInvariant(body, parsed, "gpt-image-2-image-to-image")
+	require.NoError(t, err)
+	require.True(t, modified)
+	require.Equal(t, "image_generation", gjson.GetBytes(repaired, "tool_choice.type").String())
+	require.Equal(t, "image_generation", gjson.GetBytes(repaired, "tools.0.type").String())
+	require.Equal(t, "edit", gjson.GetBytes(repaired, "tools.0.action").String())
+	require.Equal(t, "gpt-image-2-image-to-image", gjson.GetBytes(repaired, "tools.0.model").String())
 }
 
 func TestCollectOpenAIImagesFromResponsesBody_FallsBackToOutputItemDone(t *testing.T) {
