@@ -368,6 +368,40 @@ func buildOpenAIImagesResponsesRequest(parsed *OpenAIImagesRequest, toolModel st
 	return req, nil
 }
 
+func ensureOpenAIImagesResponsesToolInvariant(body []byte, parsed *OpenAIImagesRequest, toolModel string) ([]byte, bool, error) {
+	if parsed == nil {
+		return nil, false, fmt.Errorf("parsed images request is required")
+	}
+	if gjson.GetBytes(body, "tool_choice.type").String() != "image_generation" {
+		return body, false, nil
+	}
+	for _, candidate := range gjson.GetBytes(body, "tools").Array() {
+		if candidate.Get("type").String() == "image_generation" {
+			return body, false, nil
+		}
+	}
+
+	action := "generate"
+	if parsed.IsEdits() {
+		action = "edit"
+	}
+	tool := []byte(`{"type":"image_generation","action":"","model":""}`)
+	var err error
+	if tool, err = sjson.SetBytes(tool, "action", action); err != nil {
+		return nil, false, fmt.Errorf("set image tool action: %w", err)
+	}
+	if tool, err = sjson.SetBytes(tool, "model", strings.TrimSpace(toolModel)); err != nil {
+		return nil, false, fmt.Errorf("set image tool model: %w", err)
+	}
+	if body, err = sjson.SetRawBytes(body, "tools", []byte(`[]`)); err != nil {
+		return nil, false, fmt.Errorf("initialize image tools: %w", err)
+	}
+	if body, err = sjson.SetRawBytes(body, "tools.-1", tool); err != nil {
+		return nil, false, fmt.Errorf("append image generation tool: %w", err)
+	}
+	return body, true, nil
+}
+
 func shouldPassOpenAIImagesN(model string, n int) bool {
 	if n <= 1 {
 		return false
@@ -1312,6 +1346,18 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 	responsesBody, err := buildOpenAIImagesResponsesRequest(parsed, requestModel)
 	if err != nil {
 		return nil, err
+	}
+	responsesBody, repairedToolInvariant, err := ensureOpenAIImagesResponsesToolInvariant(responsesBody, parsed, requestModel)
+	if err != nil {
+		return nil, err
+	}
+	if repairedToolInvariant {
+		logger.LegacyPrintf(
+			"service.openai_gateway",
+			"[OpenAI] Repaired images request tool invariant request_model=%s endpoint=%s",
+			requestModel,
+			parsed.Endpoint,
+		)
 	}
 	upstreamReq, err := s.buildUpstreamRequest(upstreamCtx, c, account, responsesBody, token, true, parsed.StickySessionSeed(), false)
 	if err != nil {
